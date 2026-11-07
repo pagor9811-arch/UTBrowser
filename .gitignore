@@ -1,0 +1,6 @@
+# Собранные пакеты
+*.click
+
+# Каталоги сборки Clickable
+build/
+.clickable/

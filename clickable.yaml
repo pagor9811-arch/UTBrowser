@@ -1,0 +1,32 @@
+# UT Browser — сборка через Clickable.
+#
+# Приложение чисто на QML (qmlscene), поэтому билдер "pure": файлы просто
+# копируются в click-пакет.
+#
+# Целевая платформа — Ubuntu Touch 16.04 (xenial), framework ubuntu-sdk-16.04.4,
+# то есть Qt 5.9 / QtWebEngine 5.9 (Chromium 56). Именно поэтому важно не менять
+# framework на 20.04/24.04 без правок импортов: в 20.04+ модуль
+# Ubuntu.Components переименован в Lomiri.Components.
+#
+#   clickable build --arch armhf     # собрать .click
+#   clickable                        # собрать и установить на устройство
+#   clickable desktop                # проверить локально (если поддерживается)
+#
+# framework задан явно: начиная с Clickable 8 по умолчанию используется
+# ubuntu-sdk-20.04, и такой пакет не установится на 16.04.
+
+builder: pure
+framework: ubuntu-sdk-16.04.4
+
+# Все файлы приложения лежат в подкаталоге utbrowser/ (manifest.json, .desktop,
+# .apparmor, qml/). В click попадает только он.
+src_dir: utbrowser
+
+# В пакет не должно попадать ничего лишнего.
+ignore:
+  - "*.click"
+  - .git
+  - .gitignore
+
+# Процесс для clickable launch (приложение запускается через qmlscene).
+kill: qmlscene
