@@ -6,6 +6,7 @@ import Morph.Web 0.1
 import QtWebEngine 1.5
 import Qt.labs.settings 1.0
 import "adblock.js" as Adblock
+import "viewport.js" as Viewport
 
 MainView {
     id: root
@@ -23,8 +24,36 @@ MainView {
         property bool adblockEnabled: true
     }
 
-    readonly property string mobileUserAgent: "Mozilla/5.0 (Linux; Android 10; Redmi 7A) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
-    readonly property string desktopUserAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    // Версию Chromium берём у самого движка при старте (см. detectEngine).
+    // Зашитая версия (Chrome/124) заставляла сайты отдавать код, рассчитанный
+    // на новый Chromium, из-за чего страницы ломались на QtWebEngine 5.9.
+    property string chromiumVersion: "77.0.3865.0"
+
+    // В режиме "Полная версия" мобильный viewport не навязываем — иначе
+    // десктопный layout остаётся узким.
+    function scriptsForEngine() {
+        var list = [];
+        if (!appSettings.desktopMode) {
+            list.push(viewportScript);
+        }
+        if (appSettings.adblockEnabled) {
+            list.push(adblockScript);
+        }
+        return list;
+    }
+
+    function buildUserAgent(desktop) {
+        // Формат UA для Ubuntu Touch (как в Morph Browser): сайты узнают,
+        // что это мобильный Linux-браузер, а не десктопный Chrome.
+        var webkit = "537.36"
+        var chrome = chromiumVersion
+        if (desktop) {
+            return "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/" + webkit
+                    + " (KHTML, like Gecko) Chrome/" + chrome + " Safari/" + webkit
+        }
+        return "Mozilla/5.0 (Linux; Ubuntu 16.04 like Android 9) AppleWebKit/" + webkit
+                + " (KHTML, like Gecko) Chrome/" + chrome + " Mobile Safari/" + webkit
+    }
 
     property var searchUrls: [
         "https://duckduckgo.com/?q=",
@@ -48,11 +77,33 @@ MainView {
         storageName: "utbrowser"
         persistentCookiesPolicy: WebEngineProfile.ForcePersistentCookies
         httpCacheType: WebEngineProfile.DiskHttpCache
-        httpUserAgent: appSettings.desktopMode ? root.desktopUserAgent : root.mobileUserAgent
+        httpUserAgent: root.buildUserAgent(appSettings.desktopMode)
+    }
+
+    // Смена "Мобильная / Полная версия" должна применяться сразу и к уже
+    // открытым вкладкам. В QtWebEngine 5.9 setHttpUserAgent() дергает
+    // SetUserAgentOverride() для всех WebContents профиля, поэтому хватает
+    // переустановить свойство у профиля.
+    Connections {
+        target: appSettings
+        onDesktopModeChanged: {
+            browserProfile.httpUserAgent = root.buildUserAgent(appSettings.desktopMode);
+        }
     }
 
     ListModel {
         id: tabModel
+    }
+
+    // Мобильный <meta name="viewport"> + снятие десктопных min-width.
+    // Без этого QtWebEngine верстает страницы шириной ~980 CSS-px.
+    WebEngineScript {
+        id: viewportScript
+        name: "utbrowser-viewport"
+        sourceCode: Viewport.code
+        injectionPoint: WebEngineScript.DocumentCreation
+        worldId: WebEngineScript.MainWorld
+        runOnSubframes: false
     }
 
     WebEngineScript {
@@ -83,11 +134,11 @@ MainView {
     }
 
     function currentWebView() {
-        var idx = tabIndexById(currentTabId);
-        if (idx < 0) {
+        var data = currentTabData();
+        if (!data) {
             return null;
         }
-        return webRepeater.itemAt(idx);
+        return data.webView ? data.webView : null;
     }
 
     function updateTab(id, key, value) {
@@ -97,7 +148,9 @@ MainView {
         }
     }
 
-    function createTab(url, makeCurrent) {
+    // Вкладки создаются вручную (WebEngineView нельзя "переносить" между
+    // родителями), поэтому ссылка на view хранится в самой модели.
+    function createTab(url, makeCurrent, existingView) {
         var id = nextTabId;
         nextTabId = nextTabId + 1;
         var initialUrl = url ? url : "";
@@ -105,12 +158,68 @@ MainView {
             "tabId": id,
             "title": initialUrl.length > 0 ? "Загрузка…" : "Новая вкладка",
             "url": initialUrl,
-            "home": initialUrl.length === 0
+            "home": initialUrl.length === 0 && !existingView,
+            "webView": existingView ? existingView : null
         });
+        if (!existingView) {
+            createWebViewForTab(id, initialUrl);
+        }
         if (makeCurrent) {
             selectTab(id);
         }
         return id;
+    }
+
+    function createWebViewForTab(id, url) {
+        // visible/enabled НЕ передаём: они берутся из binding'ов в компоненте
+        // (visible привязан к текущей вкладке). Явное значение при создании
+        // ломает эту привязку, и вкладка оставалась невидимой.
+        var view = webViewComponent.createObject(contentArea, {
+            "tabId": id
+        });
+        if (!view) {
+            return null;
+        }
+        updateTab(id, "webView", view);
+        if (url && url.length > 0) {
+            view.loadUrl(url);
+        }
+        return view;
+    }
+
+    // Обработка target="_blank" / window.open(): вместо открытия внешнего
+    // приложения или отдельного окна "усыновляем" созданный движком WebContents
+    // в новую вкладку текущего окна через request.openIn(newView).
+    function adoptNewView(request) {
+        var target = request.requestedUrl ? request.requestedUrl.toString() : "";
+        var tabUrl = target.length > 0 ? target : "about:blank";
+        var id = nextTabId;
+        nextTabId = nextTabId + 1;
+        tabModel.append({
+            "tabId": id,
+            "title": "Загрузка…",
+            "url": tabUrl,
+            "home": false,
+            "webView": null
+        });
+
+        var view = createWebViewForTab(id, "");
+        if (!view) {
+            closeTab(id);
+            return;
+        }
+
+        try {
+            request.openIn(view);
+        } catch (e) {
+            view.loadUrl(tabUrl);
+        }
+
+        // Фоновые вкладки (target="_blank" без явного фокуса) не выводим
+        // на передний план, но и не теряем — они видны в панели вкладок.
+        if (request.destination !== WebEngineView.NewViewInBackgroundTab) {
+            selectTab(id);
+        }
     }
 
     function selectTab(id) {
@@ -131,7 +240,7 @@ MainView {
         Qt.callLater(refreshFromCurrentWebView);
         Qt.callLater(function() {
             var w = currentWebView();
-            if (w && !homeVisible) {
+            if (w && !root.homeVisible) {
                 w.forceActiveFocus();
             }
         });
@@ -142,8 +251,13 @@ MainView {
         if (idx < 0) {
             return;
         }
+        var data = tabModel.get(idx);
         var wasCurrent = (id === currentTabId);
+        var view = data.webView ? data.webView : null;
         tabModel.remove(idx);
+        if (view) {
+            view.destroy();
+        }
         if (tabModel.count === 0) {
             createTab("", true);
         } else if (wasCurrent) {
@@ -153,6 +267,12 @@ MainView {
     }
 
     function closeAllTabs() {
+        for (var i = 0; i < tabModel.count; ++i) {
+            var data = tabModel.get(i);
+            if (data && data.webView) {
+                data.webView.destroy();
+            }
+        }
         tabModel.clear();
         currentTabId = -1;
         createTab("", true);
@@ -264,9 +384,10 @@ MainView {
         currentUrl = target;
         currentTitle = "Загрузка…";
         setAddressText(target, true);
-        var w = webRepeater.itemAt(idx);
+        var data = tabDataById(currentTabId);
+        var w = data ? data.webView : null;
         if (w) {
-            w.url = target;
+            w.loadUrl(target);
         }
     }
 
@@ -338,14 +459,20 @@ MainView {
         }
     }
 
+    // User-Agent применяется ко всем страницам профиля сразу (setHttpUserAgent),
+    // но сама вёрстка пересчитывается только после перезагрузки.
     function setDesktopMode(enabled) {
         if (appSettings.desktopMode === enabled) {
             return;
         }
         appSettings.desktopMode = enabled;
-        var w = currentWebView();
-        if (w && !homeVisible && w.url.toString().length > 0) {
-            w.reload();
+        for (var i = 0; i < tabModel.count; ++i) {
+            var data = tabModel.get(i);
+            var w = data ? data.webView : null;
+            if (w && w.url && w.url.toString().length > 0
+                    && w.url.toString() !== "about:blank") {
+                w.reload();
+            }
         }
         showToast(enabled ? "Включена полная версия сайтов" : "Включена мобильная версия сайтов");
     }
@@ -363,8 +490,9 @@ MainView {
     }
 
     function clearBrowsingData() {
-        for (var i = 0; i < webRepeater.count; ++i) {
-            var w = webRepeater.itemAt(i);
+        for (var i = 0; i < tabModel.count; ++i) {
+            var data = tabModel.get(i);
+            var w = data ? data.webView : null;
             if (w) {
                 try {
                     w.runJavaScript("try{localStorage.clear();sessionStorage.clear();}catch(e){}");
@@ -502,31 +630,32 @@ MainView {
                     color: theme.bg
                 }
 
-                Repeater {
-                    id: webRepeater
-                    model: tabModel
+                // Один WebView на вкладку. Создаётся вручную (см. createTab/adoptNewView):
+                // Repeater не позволяет «усыновлять» popup-окна через request.openIn().
+                Component {
+                    id: webViewComponent
 
-                    delegate: WebView {
+                    WebView {
                         id: webView
                         anchors.fill: parent
+                        // Видимостью управляет активная вкладка, а не делегат модели,
+                        // поэтому переключение вкладок не требует ручного перебора.
                         visible: tabId === root.currentTabId && !root.homeVisible
                         enabled: visible
                         profile: browserProfile
-                        userScripts: appSettings.adblockEnabled ? [adblockScript] : []
+                        userScripts: root.scriptsForEngine()
                         zoomFactor: 1.0
+
+                        property int tabId: -1
 
                         settings.javascriptEnabled: true
                         settings.localStorageEnabled: true
                         settings.autoLoadImages: true
                         settings.javascriptCanOpenWindows: true
+                        settings.fullScreenSupportEnabled: true
                         settings.pluginsEnabled: false
 
-                        property int tabId: model.tabId
-
                         Component.onCompleted: {
-                            if (model.url && model.url.length > 0) {
-                                url = model.url;
-                            }
                             if (tabId === root.currentTabId) {
                                 Qt.callLater(root.refreshFromCurrentWebView);
                             }
@@ -610,14 +739,21 @@ MainView {
                             }
                         }
 
-                        onNewViewRequested: {
-                            if (request.requestedUrl
-                                    && request.requestedUrl.toString().length > 0) {
-                                root.createTab(request.requestedUrl.toString(), true);
+                        // Target="_blank", window.open(), кнопки «Открыть в новой вкладке».
+                        // Раньше запрос уходил наружу — теперь открываем вкладку внутри приложения.
+                        onNewViewRequested: root.adoptNewView(request)
+
+                        // Видео на весь экран остаётся внутри вкладки.
+                        onFullScreenRequested: {
+                            if (request.toggleOn) {
+                                request.accept();
+                            } else {
+                                request.reject();
                             }
                         }
                     }
                 }
+
 
                 HomePanel {
                     id: homePanel
@@ -861,6 +997,9 @@ MainView {
             searchEngine: appSettings.searchEngine
             desktopMode: appSettings.desktopMode
             adblockEnabled: appSettings.adblockEnabled
+            versionLabel: "UT Browser 1.1 · Chromium "
+                          + root.chromiumVersion.split(".")[0]
+                          + " · Ubuntu Touch"
             onSearchEngineSelected: {
                 appSettings.searchEngine = index;
                 root.showToast("Поисковик: " + ["DuckDuckGo", "Google", "Yandex"][index]);
@@ -883,7 +1022,26 @@ MainView {
         }
     }
 
+    // Версию Chromium берём у самого движка: UA с несуществующей версией
+    // (например Chrome/124 на QtWebEngine 5.9 с Chromium 56) заставляет сайты
+    // отдавать код под новый движок, и страницы ломаются.
+    function detectEngine() {
+        try {
+            var probe = Qt.createQmlObject('import QtWebEngine 1.5; WebEngineProfile { offTheRecord: true }',
+                                           root, "uaProbe");
+            var ua = probe.httpUserAgent ? probe.httpUserAgent.toString() : "";
+            var m = ua.match(/(?:Chrome|Chromium)\/([0-9.]+)/);
+            if (m && m.length > 1) {
+                chromiumVersion = m[1];
+            }
+            probe.destroy();
+        } catch (e) {
+        }
+        browserProfile.httpUserAgent = buildUserAgent(appSettings.desktopMode);
+    }
+
     Component.onCompleted: {
+        detectEngine();
         createTab("", true);
     }
 }

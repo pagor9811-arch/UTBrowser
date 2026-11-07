@@ -7,6 +7,7 @@ BottomSheet {
     property int searchEngine: 0
     property bool desktopMode: false
     property bool adblockEnabled: true
+    property string versionLabel: "UT Browser"
     signal searchEngineSelected(int index)
     signal desktopModeToggled(bool enabled)
     signal adblockToggled(bool enabled)
@@ -148,7 +149,7 @@ BottomSheet {
 
         Label {
             width: parent.width
-            text: "UT Browser 1.0 · QtWebEngine · Ubuntu Touch 16.04"
+            text: menuPanel.versionLabel
             color: menuPanel.theme ? menuPanel.theme.textDim : "#8b98a5"
             font.pixelSize: units.gu(1.1)
             horizontalAlignment: Text.AlignHCenter
