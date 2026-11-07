@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=UT Browser
+Comment=Fast, dark mobile web browser for Ubuntu Touch
+Exec=qmlscene utbrowser.qml
+Icon=utbrowser.png
+Terminal=false
+Type=Application
+X-Ubuntu-Touch=true
+X-Ubuntu-Splash-Color=#0e1116

@@ -1,0 +1,16 @@
+{
+    "name": "utbrowser",
+    "version": "1.0.0",
+    "title": "UT Browser",
+    "description": "Fast, dark and privacy-friendly mobile web browser for Ubuntu Touch 16.04.",
+    "maintainer": "UT Browser Developers <utbrowser@example.com>",
+    "framework": "ubuntu-sdk-16.04.4",
+    "architecture": "all",
+    "icon": "utbrowser.png",
+    "hooks": {
+        "utbrowser": {
+            "apparmor": "utbrowser.apparmor",
+            "desktop": "utbrowser.desktop"
+        }
+    }
+}
