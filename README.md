@@ -60,18 +60,82 @@ clickable logs                 # логи приложения с устройс
 (см. `.gitignore`) — пакет надо пересобрать после правок, старый
 `utbrowser_1.0.0_all.click` из репозитория удалён именно поэтому.
 
-## Установка на устройство вручную
+## Установка на устройство
+
+На Ubuntu Touch **нет `git`**, `apt install` не поможет (корневая ФС read-only),
+поэтому исходники на телефон забираем через `wget`/`curl` и запускаем локальный
+сборщик `build-click.py` (нужен только `python3` из прошивки — ни Docker, ни
+Clickable, ни `ar` не требуются).
+
+### 1. Скачать исходники и собрать на телефоне
 
 ```bash
-clickable build --arch armhf
-scp build/armhf/utbrowser_1.1.0_all.click phablet@<IP>:/home/phablet/
+mkdir -p ~/utb && cd ~/utb
+wget -O - https://codeload.github.com/pagor9811-arch/UTBrowser/tar.gz/refs/heads/arena/01d4f8b9-utbrowser | tar xz --strip-components=1
+python3 build-click.py
+# → utbrowser_1.1.0_all.click
+```
+
+### 2. Установить
+
+```bash
+pkcon install-local --allow-untrusted ~/utb/utbrowser_1.1.0_all.click
+```
+
+Альтернатива, если `pkcon` ругается на неподписанный пакет:
+
+```bash
+click install --user=phablet ~/utb/utbrowser_1.1.0_all.click
+```
+
+Перезапустить приложение (иконка на рабочем столе/в лаунчере).
+
+### 3. Собрать на ПК и скопировать (если удобнее)
+
+```bash
+./build-click.sh                  # или: clickable build --arch armhf
+scp utbrowser_1.1.0_all.click phablet@<IP>:/home/phablet/
 ssh phablet@<IP>
 pkcon install-local --allow-untrusted /home/phablet/utbrowser_1.1.0_all.click
 ```
 
-Проверить, что нужен именно `armhf`: на Redmi 7A (arm32) ставится `armhf`,
-на arm64-устройствах — `arm64`. Приложение architecture-independent (`all`),
-поэтому подходит любой из вариантов.
+Пакет architecture-independent (`all`), поэтому один и тот же файл подходит и
+для armhf, и для arm64.
+
+## Проверка после установки
+
+1. Меню → внизу строка `UT Browser 1.1 · Chromium 56 · Ubuntu Touch`
+   (число — реальная версия движка вашей прошивки).
+2. Открыть сайт и сравнить: текст должен быть крупным, без горизонтального
+   скролла (мобильный режим).
+3. Тап по ссылке с `target="_blank"` — открывается новая вкладка в UT Browser,
+   а не другое приложение.
+4. Если вёрстка всё ещё «десктопная» — флаги движка не применились: проверьте,
+   что запуск идёт через `utbrowser.sh` (в installed-каталоге
+   `/opt/click.ubuntu.com/utbrowser/1.1.0/utbrowser.desktop` должно быть
+   `Exec=./utbrowser.sh`), и логи: `journalctl -f | grep -i utbrowser`.
+
+## Если нужно переустановить ту же версию
+
+Click не ставит второй раз пакет с той же версией («already installed»),
+поэтому перед повторной установкой удалите старую:
+
+```bash
+pkcon remove utbrowser        # или: click unregister utbrowser utbrowser
+pkcon install-local --allow-untrusted ~/utb/utbrowser_1.1.0_all.click
+```
+
+## Обновление исходников на телефоне
+
+`git` на устройстве нет, поэтому просто скачайте архив заново (он перезапишет
+файлы поверх):
+
+```bash
+cd ~/utb
+wget -O utb.tar.gz https://codeload.github.com/pagor9811-arch/UTBrowser/tar.gz/refs/heads/arena/01d4f8b9-utbrowser
+tar xzf utb.tar.gz --strip-components=1 --overwrite
+python3 build-click.py
+```
 
 ## Откат
 
